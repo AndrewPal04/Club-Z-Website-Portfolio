@@ -32,9 +32,10 @@ function wrapWords(text, maxChars) {
   return lines;
 }
 
+// Builds the sheet in memory and returns its bytes. It must never be written
+// to disk, and especially not to public/, which is served without a login.
 async function generateAttendancePDF(info, sessions, counts, extra) {
   const templatePath = path.join(__dirname, 'Student Attendance Sheet TEMPLATE.pdf');
-  const outputPath = path.join(__dirname, 'public', 'Student_Attendance_Sheet.pdf');
   const pdfDoc = await PDFDocument.load(fs.readFileSync(templatePath));
   const page = pdfDoc.getPages()[0];
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
@@ -85,9 +86,7 @@ async function generateAttendancePDF(info, sessions, counts, extra) {
   page.drawText(`${counts.onlineCount}`, { x: 500, y: 210, size: fontSize, font });
   page.drawText(`${counts.inPersonCount}`, { x: 360, y: 210, size: fontSize, font });
 
-  fs.writeFileSync(outputPath, await pdfDoc.save());
-  console.log(`Attendance PDF generated at: ${outputPath}`);
-  return outputPath;
+  return Buffer.from(await pdfDoc.save());
 }
 
 module.exports = generateAttendancePDF;

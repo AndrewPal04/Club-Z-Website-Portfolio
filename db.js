@@ -1,7 +1,5 @@
 const Database = require('better-sqlite3');
-const bcrypt = require('bcryptjs');
 const path = require('path');
-const fs = require('fs');
 
 const dbPath = process.env.DB_PATH
   ? path.resolve(process.env.DB_PATH)
@@ -72,19 +70,28 @@ db.exec(`
   );
 `);
 
-// Migrate users from users.json if the table is empty
-const userCount = db.prepare('SELECT COUNT(*) as count FROM users').get();
-if (userCount.count === 0) {
-  const usersPath = path.join(__dirname, 'users.json');
-  if (fs.existsSync(usersPath)) {
-    const users = JSON.parse(fs.readFileSync(usersPath, 'utf8'));
-    const insertUser = db.prepare('INSERT INTO users (username, password_hash) VALUES (?, ?)');
-    for (const [username, password] of Object.entries(users)) {
-      const hash = bcrypt.hashSync(password, 10);
-      insertUser.run(username, hash);
-    }
-    console.log('Migrated users from users.json to SQLite');
-  }
+// The login account comes only from environment variables. No credentials are
+// stored in the repo, and the password itself never reaches the server: only
+// its bcrypt hash (create one with `npm run hash-password`).
+const adminUsername = (process.env.ADMIN_USERNAME || '').trim();
+const adminHash = (process.env.ADMIN_PASSWORD_HASH || '').trim();
+
+if (adminUsername && /^\$2[aby]\$\d{2}\$.{53}$/.test(adminHash)) {
+  db.transaction(() => {
+    db.prepare(
+      'INSERT INTO users (username, password_hash) VALUES (?, ?) ' +
+      'ON CONFLICT(username) DO UPDATE SET password_hash = excluded.password_hash'
+    ).run(adminUsername, adminHash);
+    // Remove any other account (for example ones seeded from the old users.json)
+    // so only the configured login works, even on a persistent disk.
+    db.prepare('DELETE FROM users WHERE username <> ?').run(adminUsername);
+  })();
+} else {
+  db.prepare('DELETE FROM users').run();
+  console.warn(
+    'No valid ADMIN_USERNAME / ADMIN_PASSWORD_HASH set: login is disabled. ' +
+    'Run `npm run hash-password` and set both environment variables.'
+  );
 }
 
 module.exports = db;

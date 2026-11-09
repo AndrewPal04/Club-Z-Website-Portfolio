@@ -3,8 +3,7 @@ require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
 const session = require('express-session');
-const path = require('path');
-const fs = require('fs');
+const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
@@ -16,20 +15,34 @@ const generateAttendancePDF = require('./generate-attendance');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+
+// Never fall back to a known secret: anyone could forge session cookies with it.
+let sessionSecret = process.env.SESSION_SECRET;
+if (!sessionSecret || sessionSecret.length < 32) {
+  if (IS_PRODUCTION) {
+    console.error('SESSION_SECRET must be set to a random string of at least 32 characters.');
+    process.exit(1);
+  }
+  sessionSecret = crypto.randomBytes(32).toString('hex');
+  console.warn('SESSION_SECRET not set: using a random one, so logins reset when the server restarts.');
+}
 
 app.set('trust proxy', 1);
 app.use(helmet());
 app.use(bodyParser.urlencoded({ extended: true }));
+// public/ is served without a login, so it must only ever hold static assets
+// (the logo). Generated PDFs are sent straight from memory by the routes below.
 app.use(express.static('public'));
 
 app.use(session({
   store: new SqliteStore({ client: db }),
-  secret: process.env.SESSION_SECRET || 'clubz-dev-secret',
+  secret: sessionSecret,
   resave: false,
   saveUninitialized: false,
   cookie: {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
+    secure: IS_PRODUCTION,
     sameSite: 'strict',
     maxAge: 7 * 24 * 60 * 60 * 1000
   }
@@ -283,23 +296,20 @@ app.post('/submit-attendance-final', requireAuth, async (req, res) => {
     `INSERT INTO attendance_extra (session_id, progress_notes, review_date)
      VALUES (?, ?, ?)
      ON CONFLICT(session_id) DO UPDATE SET progress_notes = excluded.progress_notes, review_date = excluded.review_date`
-  ).run(req.session.currentAttendanceId, req.body.monthlyProgress, req.body.reviewDate);
+  ).run(req.session.currentAttendanceId, monthlyProgress, reviewDate);
 
   db.prepare("UPDATE attendance_sessions SET updated_at = datetime('now') WHERE id = ?")
     .run(req.session.currentAttendanceId);
 
-  const { info, sessions, counts, extra } = loadAttendanceData(req.session.currentAttendanceId);
-  await generateAttendancePDF(info, sessions, counts, extra);
   res.sendFile('attendance-generated.html', { root: __dirname });
 });
 
 app.get('/download-attendance', requireAuth, async (req, res) => {
   try {
     const { info, sessions, counts, extra } = loadAttendanceData(req.session.currentAttendanceId);
-    const filePath = await generateAttendancePDF(info, sessions, counts, extra);
+    const pdfBuf = await generateAttendancePDF(info, sessions, counts, extra);
     db.prepare("UPDATE attendance_sessions SET status = 'complete', updated_at = datetime('now') WHERE id = ?")
       .run(req.session.currentAttendanceId);
-    const pdfBuf = fs.readFileSync(filePath);
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', 'attachment; filename=Student_Attendance_Sheet.pdf');
     res.send(pdfBuf);
@@ -377,8 +387,7 @@ app.get('/redownload/attendance/:id', requireAuth, async (req, res) => {
     if (!att) return res.status(404).send('Document not found.');
 
     const { info, sessions, counts, extra } = loadAttendanceData(att.id);
-    const filePath = await generateAttendancePDF(info, sessions, counts, extra);
-    const pdfBuf = fs.readFileSync(filePath);
+    const pdfBuf = await generateAttendancePDF(info, sessions, counts, extra);
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename=Student_Attendance_Sheet_${info.month}.pdf`);
     res.send(pdfBuf);

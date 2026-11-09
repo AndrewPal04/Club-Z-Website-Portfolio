@@ -1,3 +1,25 @@
 node_modules/
-clubz.db
+
+# Secrets and local configuration
 .env
+.env.*
+!.env.example
+users.json
+.claude/
+
+# Databases hold login hashes and student records
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+
+# Generated documents and student data: never commit these
+public/*.pdf
+*Attendance_Sheet*.pdf
+Tutor_Time_Summary*.pdf
+GeneratedTimeCard*.pdf
+students.json
+studentData.json
+attendance*.json
+currentAttendance.json
+currentSession.json
